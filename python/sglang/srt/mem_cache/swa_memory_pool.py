@@ -638,6 +638,7 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
             return indices
 
         pages = torch.unique(indices // self.page_size)
+        # PagedTokenToKVPoolAllocator reserves page 0 for dummy/null slots.
         pages = pages[pages > 0]
         if pages.numel() == 0:
             return indices[:0]
@@ -662,6 +663,7 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
             return
 
         pages = torch.unique(swa_indices // self.page_size)
+        # PagedTokenToKVPoolAllocator reserves page 0 for dummy/null slots.
         pages = pages[pages > 0]
         if pages.numel() == 0:
             return
