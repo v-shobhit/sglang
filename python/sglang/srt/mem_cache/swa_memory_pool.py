@@ -603,20 +603,22 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
 
         return alloc_full_indices
 
-    def free(self, free_index: torch.Tensor):
+    def free(self, free_index: torch.Tensor) -> int:
         if free_index.numel() == 0:
-            return
+            return 0
 
         # NOTE: the API is not idempotent.
         if self.is_not_in_free_group:
             self.full_attn_allocator.free(free_index)
-            self.free_swa(free_index)
+            swa_freed = self.free_swa(free_index)
         else:
             self.free_group.append(free_index)
+            swa_freed = 0
         assert (
             self.full_attn_allocator.available_size() <= self.full_attn_allocator.size
         )
         assert self.swa_attn_allocator.available_size() <= self.swa_attn_allocator.size
+        return swa_freed
 
     def set_full_to_swa_mapping(
         self, full_indices: torch.Tensor, swa_indices: torch.Tensor
@@ -647,26 +649,27 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         expanded = (pages[:, None] * self.page_size + offsets[None, :]).reshape(-1)
         return expanded[(expanded > 0) & (expanded < limit)]
 
-    def _free_unowned_swa_pages_for_indices(self, swa_indices: torch.Tensor) -> None:
+    def _free_unowned_swa_pages_for_indices(self, swa_indices: torch.Tensor) -> int:
         if swa_indices.numel() == 0:
-            return
+            return 0
 
         swa_indices = swa_indices.to(dtype=torch.int64)
+        available_before = self.swa_attn_allocator.available_size()
         if self.page_size == 1:
             self.swa_attn_allocator.free(swa_indices)
-            return
+            return self.swa_attn_allocator.available_size() - available_before
 
         swa_indices = swa_indices[
             (swa_indices > 0) & (swa_indices < self.swa_to_full_index_mapping.numel())
         ]
         if swa_indices.numel() == 0:
-            return
+            return 0
 
         pages = torch.unique(swa_indices // self.page_size)
         # PagedTokenToKVPoolAllocator reserves page 0 for dummy/null slots.
         pages = pages[pages > 0]
         if pages.numel() == 0:
-            return
+            return 0
 
         offsets = torch.arange(
             self.page_size, dtype=torch.int64, device=swa_indices.device
@@ -686,13 +689,14 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
         free_pages = pages[~has_owner]
         if free_pages.numel() > 0:
             self.swa_attn_allocator.free(free_pages * self.page_size)
+        return self.swa_attn_allocator.available_size() - available_before
 
-    def free_swa(self, free_index: torch.Tensor):
+    def free_swa(self, free_index: torch.Tensor) -> int:
         free_index = self._expand_indices_to_pages(
             free_index, self.full_to_swa_index_mapping.numel() - 1
         )
         if free_index.numel() == 0:
-            return
+            return 0
 
         swa_indices = self.full_to_swa_index_mapping[free_index]
         valid = swa_indices > 0
@@ -712,7 +716,7 @@ class SWATokenToKVPoolAllocator(BaseTokenToKVPoolAllocator):
 
         self.swa_to_full_index_mapping[swa_indices] = 0
         self.full_to_swa_index_mapping[full_indices] = 0
-        self._free_unowned_swa_pages_for_indices(swa_indices)
+        return self._free_unowned_swa_pages_for_indices(swa_indices)
 
     def backup_state(self):
         return [
