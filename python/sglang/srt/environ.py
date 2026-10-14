@@ -1141,6 +1141,9 @@ class Envs:
     # warmup. Opt-in: the extra forward needs transient activation headroom
     # that small-VRAM or tightly-packed configs may not have.
     SGLANG_FLASHINFER_AUTOTUNE_EXTEND = EnvBool(False)
+    # Kimi-K3: route verify-size dense bf16 GEMMs (m up to 96..320 by shape) to the
+    # CuTe-DSL TGV kernel where it beats cuBLAS on B300; off keeps the m <= 8 gate.
+    SGLANG_ENABLE_K3_TGV_VERIFY_GATE = EnvBool(False)
 
     # ===================================================================
     # Triton and Torch compilation
