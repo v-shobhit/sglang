@@ -39,6 +39,7 @@ from cutlass.cute.nvgpu import tcgen05
 from cutlass.cute.runtime import from_dlpack, make_fake_stream
 
 from sglang.kernels.kernel_api_logging import debug_kernel_api
+from sglang.srt.environ import envs
 from sglang.srt.utils import is_sm100_supported
 from sglang.srt.utils.common import direct_register_custom_op
 
@@ -1353,6 +1354,20 @@ _K3_TGV_WIN_SHAPES = frozenset(
     }
 )
 
+# Largest m (8 x batch at DSpark verify) where TGV with _pick_tactic still beats
+# cuBLAS on these shapes: B300, CUDA-graph timing, weights rotated past 2x L2
+# (k3-microbench bench_tgv_vs_cublas). kda [f_a|b] (144, 7168) never wins.
+_K3_TGV_VERIFY_MAX_M = {
+    (6016, 7168): 96,  # merged MoE front
+    (6144, 7168): 96,  # KDA fused qkvg
+    (7168, 3584): 96,  # MoE latent up
+    (7168, 1536): 96,  # KDA / MLA o_proj
+    (7168, 768): 96,  # shared down
+    (2112, 7168): 320,  # MLA fused q_a | kv_a above dsv3_fused_a_gemm's 16 tokens
+    (1536, 7168): 320,  # MLA g_proj
+}
+_K3_TGV_VERIFY_GATE = envs.SGLANG_ENABLE_K3_TGV_VERIFY_GATE.get()
+
 
 def use_cutedsl_bf16_gemm(m: int, n: int, k: int) -> bool:
     """TGV-vs-cuBLAS (``F.linear``) decision, CUPTI-measured on B300 under CUDA
@@ -1367,6 +1382,8 @@ def use_cutedsl_bf16_gemm(m: int, n: int, k: int) -> bool:
         return False
     if m <= 8 and (n, k) in _K3_TGV_WIN_SHAPES:
         return True
+    if _K3_TGV_VERIFY_GATE and (n, k) in _K3_TGV_VERIFY_MAX_M:
+        return m <= _K3_TGV_VERIFY_MAX_M[(n, k)]
     if n < 1024 or k < 2048 or k > 6144:
         return False
     ragged = m % 16 != 0

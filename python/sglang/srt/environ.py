@@ -1144,6 +1144,9 @@ class Envs:
     # Feed random token ids to the decode autotune dummy forward so MoE tactics
     # are tuned on spread-out routing, not every token on the same experts.
     SGLANG_ENABLE_FLASHINFER_AUTOTUNE_RANDOM_TOKENS = EnvBool(False)
+    # Kimi-K3: route verify-size dense bf16 GEMMs (m up to 96..320 by shape) to the
+    # CuTe-DSL TGV kernel where it beats cuBLAS on B300; off keeps the m <= 8 gate.
+    SGLANG_ENABLE_K3_TGV_VERIFY_GATE = EnvBool(False)
 
     # ===================================================================
     # Triton and Torch compilation
