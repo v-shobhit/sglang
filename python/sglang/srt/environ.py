@@ -1141,6 +1141,9 @@ class Envs:
     # warmup. Opt-in: the extra forward needs transient activation headroom
     # that small-VRAM or tightly-packed configs may not have.
     SGLANG_FLASHINFER_AUTOTUNE_EXTEND = EnvBool(False)
+    # Kimi-K3: also autotune the trtllm-gen MXFP4 routed experts at the prefill
+    # token ceiling (decode autotune covers only up to the decode token count).
+    SGLANG_K3_PREFILL_MOE_AUTOTUNE = EnvBool(False)
 
     # ===================================================================
     # Triton and Torch compilation

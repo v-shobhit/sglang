@@ -2919,6 +2919,21 @@ class KimiK3LinearModel(nn.Module):
         )
 
 
+def _k3_moe_is_trtllm_mxfp4(moe: KimiK3MoE) -> bool:
+    """Latent routed experts on the SM100/SM103 trtllm-gen MXFP4 runner."""
+    from sglang.srt.layers.quantization.mxfp4 import Mxfp4MoEMethod
+
+    method = moe.experts.quant_method
+    return (
+        not moe._use_mega_moe
+        and moe.routed_expert_down_proj is not None
+        and isinstance(method, Mxfp4MoEMethod)
+        and method.use_flashinfer
+        and not method.use_marlin
+        and method._fi_kernel == "trtllm_sm100"
+    )
+
+
 class KimiK3LinearForCausalLM(nn.Module):
     """Text-only K3 causal LM."""
 
@@ -3004,6 +3019,50 @@ class KimiK3LinearForCausalLM(nn.Module):
         # DFLASH target_layer_ids name layer outputs, which is what the DSPARK
         # taps already capture here, so reuse them without the usual +1 shift.
         self.set_dspark_layers_to_capture(layer_ids)
+
+    def wants_prefill_autotune(self) -> bool:
+        return (
+            envs.SGLANG_K3_PREFILL_MOE_AUTOTUNE.get()
+            and get_moe_runner_backend().is_flashinfer_mxfp4()
+            and get_moe_a2a_backend().is_none()
+            and not is_dp_attention_enabled()
+        )
+
+    @torch.inference_mode()
+    def autotune_prefill_kernels(self, num_tokens: int, *, dtype: torch.dtype) -> int:
+        """Run each distinct routed-expert shape once at the prefill token ceiling.
+
+        The decode-shaped autotune stops at the decode token count, so prefill
+        batches above it fall back to the default trtllm-gen MoE tactic.
+        """
+        seen = set()
+        generator = None
+        for moe in self.model.modules():
+            if not isinstance(moe, KimiK3MoE) or not _k3_moe_is_trtllm_mxfp4(moe):
+                continue
+            key = (moe.experts.w13_weight.shape, moe.experts.w2_weight.shape)
+            if key in seen:
+                continue
+            seen.add(key)
+            device = moe.experts.w13_weight.device
+            # Identical inputs on every TP rank, so all ranks tune the same routing.
+            if generator is None:
+                generator = torch.Generator(device=device).manual_seed(0)
+            hidden_states = torch.randn(
+                (num_tokens, moe.gate.weight.shape[1]),
+                dtype=dtype,
+                device=device,
+                generator=generator,
+            )
+            router_logits = moe.gate(hidden_states)
+            routed_input, _ = moe.routed_expert_down_proj(hidden_states)
+            latent = torch.empty(
+                (num_tokens, moe.moe_hidden_size), dtype=dtype, device=device
+            )
+            moe._forward_routed(hidden_states, router_logits, routed_input, latent)
+            del hidden_states, router_logits, routed_input, latent
+        torch.cuda.empty_cache()
+        return len(seen)
 
     @torch.no_grad()
     def forward(
@@ -3506,6 +3565,15 @@ class KimiK3ForConditionalGeneration(nn.Module):
                 "DSPARK layer capture is not available in encoder-only mode"
             )
         self.language_model.set_dspark_layers_to_capture(layer_ids)
+
+    def wants_prefill_autotune(self) -> bool:
+        return (
+            self.language_model is not None
+            and self.language_model.wants_prefill_autotune()
+        )
+
+    def autotune_prefill_kernels(self, num_tokens: int, *, dtype: torch.dtype) -> int:
+        return self.language_model.autotune_prefill_kernels(num_tokens, dtype=dtype)
 
     def get_aux_hidden_states_width(self) -> int:
         if self.language_model is None:
