@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
+from sglang.srt.environ import envs
 from sglang.srt.layers.attention.linear.kernels.kernel_backend import (
     LinearAttnKernelBase,
 )
@@ -80,6 +81,22 @@ class FlashInferKDAPrefillKernel(LinearAttnKernelBase):
         from flashinfer.kda import recurrent_kda
 
         self._recurrent_kda = recurrent_kda
+        self._stable_cu_enabled = envs.SGLANG_KDA_FI_PREFILL_STABLE_CU.get()
+        # query_start_loc of the current forward and its int64 copy. The strong
+        # reference keeps the source identity from being recycled mid-forward.
+        self._cu_src: Optional[torch.Tensor] = None
+        self._cu_i64: Optional[torch.Tensor] = None
+
+    def _stable_cu_seqlens(self, query_start_loc: torch.Tensor) -> torch.Tensor:
+        # FlashInfer casts int32 offsets to a fresh int64 tensor per call, and its
+        # host-side cu_seqlens memo (kda_chunked_bt16._cu_seqlens_contents) only
+        # hits on the identical object, so each KDA layer paid a D2H sync.
+        if query_start_loc.dtype == torch.int64:
+            return query_start_loc
+        if self._cu_src is not query_start_loc:
+            self._cu_src = query_start_loc
+            self._cu_i64 = query_start_loc.to(torch.int64)
+        return self._cu_i64
 
     def decode(self, *args, **kwargs):
         raise NotImplementedError("FlashInferKDAPrefillKernel is prefill-only")
@@ -127,7 +144,11 @@ class FlashInferKDAPrefillKernel(LinearAttnKernelBase):
             use_qk_l2norm_in_kernel=True,
             use_gate_in_kernel=True,
             lower_bound=lower_bound,
-            cu_seqlens=query_start_loc,
+            cu_seqlens=(
+                self._stable_cu_seqlens(query_start_loc)
+                if self._stable_cu_enabled
+                else query_start_loc
+            ),
             ssm_state_indices=cache_indices.to(torch.int32),
             beta_is_logit=True,
             state_checkpoints=checkpoints,

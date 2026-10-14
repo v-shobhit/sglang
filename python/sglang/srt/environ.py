@@ -1483,6 +1483,10 @@ class Envs:
     # mamba pool ratio accordingly. Frees one resident slot per running request,
     # raising max_running_requests. Off = original locking + ratio (escape hatch).
     SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK = EnvBool(False)
+    # FlashInfer cute-DSL KDA prefill: hand every KDA layer of a forward the same
+    # int64 cu_seqlens object so FlashInfer's per-object host memo hits after the
+    # first layer (one D2H sync per extend instead of one per KDA layer).
+    SGLANG_KDA_FI_PREFILL_STABLE_CU = EnvBool(False)
 
     # ===================================================================
     # CUDA graphs and execution buffers
