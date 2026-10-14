@@ -300,6 +300,37 @@ def flashinfer_autotune_context(model_runner: ModelRunner, *, run_lm_head: bool)
     logger.info("FlashInfer autotune completed.")
 
 
+@contextlib.contextmanager
+def varied_autotune_token_ids(input_ids: torch.Tensor, *, vocab_size: int):
+    """Fill the dummy batch with random token ids for the autotune forward.
+
+    FlashInfer tunes MoE tactics on the dummy batch's own routing rows. An
+    all-zero batch sends every token to the same top-k experts, so tactics get
+    tuned for T rows per expert instead of about T * top_k / num_experts.
+    """
+    if not envs.SGLANG_ENABLE_FLASHINFER_AUTOTUNE_RANDOM_TOKENS.get():
+        yield
+        return
+    saved = input_ids.clone()
+    # Fixed seed: every TP rank must feed the same ids into the same forward.
+    gen = torch.Generator(device=input_ids.device)
+    gen.manual_seed(0)
+    input_ids.copy_(
+        torch.randint(
+            0,
+            vocab_size,
+            input_ids.shape,
+            generator=gen,
+            device=input_ids.device,
+            dtype=input_ids.dtype,
+        )
+    )
+    try:
+        yield
+    finally:
+        input_ids.copy_(saved)
+
+
 def run_flashinfer_autotune_forward(
     model_runner: ModelRunner, forward_fn: Callable[[], None], *, run_lm_head: bool
 ) -> None:

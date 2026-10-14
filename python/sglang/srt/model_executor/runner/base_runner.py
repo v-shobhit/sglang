@@ -46,6 +46,7 @@ from sglang.srt.model_executor.runner.flashinfer_autotune import (
     maybe_flashinfer_autotune_extend,
     run_flashinfer_autotune_forward,
     should_run_flashinfer_autotune,
+    varied_autotune_token_ids,
 )
 from sglang.srt.runtime_context import (
     get_disagg,
@@ -394,11 +395,14 @@ class BaseRunner(ABC):
         )
 
         def forward_fn():
-            self._dummy_run(
-                batch_size=batch_size,
-                buffers=buffers,
-                run_ctx=canary_run_ctx,
-            )
+            with varied_autotune_token_ids(
+                buffers.input_ids, vocab_size=mr.model_config.vocab_size
+            ):
+                self._dummy_run(
+                    batch_size=batch_size,
+                    buffers=buffers,
+                    run_ctx=canary_run_ctx,
+                )
 
         run_flashinfer_autotune_forward(
             self.model_runner, forward_fn, run_lm_head=False

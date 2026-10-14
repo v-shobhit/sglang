@@ -1141,6 +1141,9 @@ class Envs:
     # warmup. Opt-in: the extra forward needs transient activation headroom
     # that small-VRAM or tightly-packed configs may not have.
     SGLANG_FLASHINFER_AUTOTUNE_EXTEND = EnvBool(False)
+    # Feed random token ids to the decode autotune dummy forward so MoE tactics
+    # are tuned on spread-out routing, not every token on the same experts.
+    SGLANG_ENABLE_FLASHINFER_AUTOTUNE_RANDOM_TOKENS = EnvBool(False)
 
     # ===================================================================
     # Triton and Torch compilation
